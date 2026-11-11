@@ -46,6 +46,11 @@ AUDIT_EVENTS = [
     ("Ayer", "Camila Rojas", "Modo de pantalla", "Pantalla activada"),
 ]
 
+def log_event(user_name, event, detail):
+    now_str = datetime.now().strftime("%H:%M")
+    AUDIT_EVENTS.insert(0, (now_str, user_name, event, detail))
+    if len(AUDIT_EVENTS) > 30:
+        AUDIT_EVENTS.pop()
 
 def login_required(role=None):
     def decorate(view):
@@ -93,11 +98,18 @@ def sign_in():
     session.clear()
     session["user"] = {key: user[key] for key in ("name", "role", "role_label", "initials")}
     session["screen_awake"] = True
+
+    log_event(user["name"], "Inicio de sesión", f"Acceso {user['role_label']}")
+
     return redirect(url_for("dashboard"))
 
 
 @app.post("/logout")
 def sign_out():
+    user = session.get("user")
+    if user:
+        log_event(user["name"], "Cierre de sesión", "Salida del sistema")
+
     session.clear()
     return redirect(url_for("login"))
 
@@ -179,6 +191,8 @@ def reader_video():
 @login_required("operator")
 def toggle_screen():
     session["screen_awake"] = not session.get("screen_awake", True)
+    estado = "Pantalla activada" if session["screen_awake"] else "Modo descanso activado"
+    log_event(session["user"]["name"], "Modo de pantalla", estado)
     flash("Pantalla activada." if session["screen_awake"] else "Modo descanso activado. (Simulación)", "success")
     return redirect(url_for("dashboard"))
 
