@@ -1,0 +1,8 @@
+Flask>=3.0,<4.0
+joblib
+mediapipe
+numpy
+opencv-python
+pydub
+pygame-ce>=2.5.8
+scikit-learn
