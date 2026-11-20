@@ -13,11 +13,14 @@ import queue
 import threading
 import time
 import unicodedata
+from datetime import datetime, timezone
+import copy
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-MODEL_PATH = ROOT / "assets" / "sign_reader" / "modelo_random_forest.pkl"
+MODEL_ONE_HAND_PATH = ROOT / "assets" / "sign_reader" / "modelo_random_forest_1mano.pkl"
+MODEL_TWO_HANDS_PATH = ROOT / "assets" / "sign_reader" / "modelo_random_forest_2manos.pkl"
 LANDMARKER_PATH = ROOT / "assets" / "sign_reader" / "hand_landmarker.task"
 AUDIO_PATH = ROOT / "assets" / "audios"
 
@@ -100,6 +103,14 @@ class SignReader:
         self._confidence = 0.0
         self._last_updated: float | None = None
         self._error = ""
+        self._sample = None
+
+    def capture_sample(self):
+        """Instantánea reciente sin exponer coordenadas en el sondeo de estado."""
+        with self._lock:
+            if self._state != "running" or not self._sample or time.time() - self._sample[0] > 1:
+                raise ValueError("Inicia el lector y muestra una mano frente a la cámara.")
+            return copy.deepcopy(self._sample[1])
 
     def status(self) -> dict:
         with self._lock:
@@ -125,6 +136,7 @@ class SignReader:
             if self._thread and self._thread.is_alive():
                 return False
             self._stop_event.clear()
+            self._sample = None
             self._state = "starting"
             self._model_ready = False
             self._camera_ready = False
@@ -264,11 +276,12 @@ class SignReader:
             from mediapipe.tasks import python
             from mediapipe.tasks.python import vision
 
-            if not MODEL_PATH.is_file() or not LANDMARKER_PATH.is_file():
+            if not MODEL_ONE_HAND_PATH.is_file() or not MODEL_TWO_HANDS_PATH.is_file() or not LANDMARKER_PATH.is_file():
                 self._set_error("Faltan los archivos del modelo o del detector de manos.")
                 return
 
-            model = joblib.load(MODEL_PATH)
+            model_one_hand = joblib.load(MODEL_ONE_HAND_PATH)
+            model_two_hands = joblib.load(MODEL_TWO_HANDS_PATH)
             options = vision.HandLandmarkerOptions(
                 base_options=python.BaseOptions(model_asset_path=str(LANDMARKER_PATH)),
                 num_hands=2,
@@ -310,8 +323,14 @@ class SignReader:
                 result = detector.detect(image)
                 now = time.time()
                 accepted = []
-
-                for landmarks in result.hand_landmarks:
+                vector_left = np.zeros(63, dtype=np.float32)
+                vector_right = np.zeros(63, dtype=np.float32)
+                raw_left = np.zeros((21, 3), dtype=np.float32)
+                raw_right = np.zeros((21, 3), dtype=np.float32)
+                left_found = False
+                right_found = False
+                wrist_position = None
+                for hand_index, landmarks in enumerate(result.hand_landmarks):
                     for landmark in landmarks:
                         cv2.circle(
                             frame,
@@ -320,18 +339,63 @@ class SignReader:
                             (0, 210, 150),
                             -1,
                         )
-                    raw = np.array([[point.x, point.y, point.z] for point in landmarks])
-                    normalized = (raw - raw[0]).flatten().reshape(1, -1)
-                    prediction = str(model.predict(normalized)[0]).strip().upper()
-                    confidence = float(np.max(model.predict_proba(normalized)))
+                    raw = np.array([[point.x, point.y, point.z] for point in landmarks], dtype=np.float32)
+                    normalized = (raw - raw[0]).flatten()
+                    side = result.handedness[hand_index][0].category_name
+                    if side == "Left" and not left_found:
+                        vector_left, raw_left = normalized, raw
+                        left_found = True
+                    elif not right_found:
+                        vector_right, raw_right = normalized, raw
+                        right_found = True
+                    else:
+                        vector_left, raw_left = normalized, raw
+                        left_found = True
                     wrist_x = int(landmarks[0].x * width)
                     wrist_y = int(landmarks[0].y * height)
-                    if confidence > CONFIDENCE_THRESHOLD:
-                        accepted.append((prediction, confidence, wrist_x, wrist_y))
-                    else:
-                        cv2.putText(frame, "Analizando...", (wrist_x - 30, wrist_y - 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+                    if wrist_position is None:
+                        wrist_position = (wrist_x, wrist_y)
 
+                if result.hand_landmarks:
+                    if left_found and right_found:
+                        handedness = "Both"
+                        features = np.concatenate([vector_left, vector_right]).reshape(1, -1)
+                        model = model_two_hands
+                    elif left_found:
+                        handedness = "Left"
+                        features = vector_left.reshape(1, -1)
+                        model = model_one_hand
+                    elif right_found:
+                        handedness = "Right"
+                        features = vector_right.reshape(1, -1)
+                        model = model_one_hand
+                    else:
+                        handedness = "unknown"
+                        features = None
+
+                    if features is None:
+                        prediction = ""
+                        confidence = 0.0
+                    else:
+                        prediction = str(model.predict(features)[0]).strip().upper()
+                        confidence = float(np.max(model.predict_proba(features)))
+                    sample = {
+                        "landmarks": np.concatenate([raw_left, raw_right]).tolist(),
+                        "prediction": prediction,
+                        "confidence": confidence,
+                        "handedness": handedness,
+                        "captured_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    with self._lock:
+                        self._sample = (now, sample)
+                    if confidence > CONFIDENCE_THRESHOLD and wrist_position:
+                        accepted.append((prediction, confidence, *wrist_position))
+                    elif wrist_position:
+                        cv2.putText(frame, "Analizando...", (wrist_position[0] - 30, wrist_position[1] - 20),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+                else:
+                    with self._lock:
+                        self._sample = None
                 best = max(accepted, key=lambda item: item[1]) if accepted else None
                 if best:
                     sign, confidence, wrist_x, wrist_y = best

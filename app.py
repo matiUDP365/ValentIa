@@ -5,12 +5,28 @@ from functools import wraps
 import hmac
 import os
 import time
+import csv
+import io
+import secrets
+import threading
+from pathlib import Path
+from dotenv import load_dotenv
 
 from flask import Flask, Response, abort, flash, jsonify, redirect, render_template, request, session, stream_with_context, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from raspberry import get_monitoring_data, receive_telemetry
 from sign_reader import reader
+import storage
+from dataset import validate_sample
+
+load_dotenv(Path(__file__).with_name(".env"))
+
+LOCAL_SIGN_DATASET = Path(os.environ.get(
+    "LOCAL_SIGN_DATASET",
+    str(Path(__file__).with_name("dataset_senias.csv")),
+))
+LOCAL_SIGN_DATASET_LOCK = threading.Lock()
 
 app = Flask(__name__)
 app.config.update(
@@ -70,7 +86,9 @@ def login_required(role=None):
 
 @app.context_processor
 def shared_template_data():
-    return {"current_year": datetime.now().year}
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_urlsafe(32)
+    return {"current_year": datetime.now().year, "csrf_token": session["csrf_token"]}
 
 
 @app.get("/")
@@ -156,17 +174,111 @@ def raspberry_telemetry_api():
         return jsonify({"error": "La recepción de telemetría no está configurada."}), 503
 
     authorization = request.headers.get("Authorization", "")
-    supplied_token = authorization.removeprefix("Bearer ").strip()
+    supplied_token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
     if not hmac.compare_digest(supplied_token, expected_token):
         return jsonify({"error": "Token de dispositivo inválido."}), 401
     if not request.is_json:
         return jsonify({"error": "Envía el paquete con Content-Type: application/json."}), 415
 
     try:
-        result = receive_telemetry(request.get_json(silent=False))
+        result = receive_telemetry(request.get_json(silent=False), persist=storage.save_telemetry)
+    except storage.StorageError as exc:
+        return jsonify({"error": str(exc), "saved": False}), 503
     except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"ok": True, **result}), 202
+    return jsonify({"ok": True, "saved": True, **result}), 201
+
+
+@app.post("/api/raspberry/sign-samples")
+def raspberry_sign_sample():
+    expected = os.environ.get("DEVICE_API_TOKEN", "")
+    if not expected:
+        return jsonify({"error": "Configura DEVICE_API_TOKEN.", "saved": False}), 503
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:].strip() if auth.startswith("Bearer ") else ""
+    if not hmac.compare_digest(token, expected):
+        return jsonify({"error": "Token inválido.", "saved": False}), 401
+    if not request.is_json:
+        return jsonify({"error": "Se requiere application/json.", "saved": False}), 415
+    try:
+        sample = validate_sample(request.get_json())
+        saved = storage.save_sample(sample)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "saved": False}), 400
+    except storage.StorageError as exc:
+        return jsonify({"error": str(exc), "saved": False}), 503
+    return jsonify({"saved": True, "id": saved["id"]}), 201
+
+
+@app.post("/operator/dataset/capture", endpoint="capture_dataset_sample")
+@login_required("operator")
+def capture_dataset_sample():
+    token = request.form.get("csrf_token", "")
+    if not token or not hmac.compare_digest(token, session.get("csrf_token", "")):
+        abort(403)
+    try:
+        sample = validate_sample({**reader.capture_sample(), "label": request.form.get("label", "")})
+        row = [sample["label"], *sample["features"]]
+        if len(sample["features"]) == 126 and sample["handedness"] != "Both":
+            start = 0 if sample["handedness"] == "Left" else 63
+            row = [sample["label"], *sample["features"][start:start + 63]]
+        LOCAL_SIGN_DATASET.parent.mkdir(parents=True, exist_ok=True)
+        with LOCAL_SIGN_DATASET_LOCK, LOCAL_SIGN_DATASET.open("a", newline="", encoding="utf-8") as output:
+            csv.writer(output).writerow(row)
+    except (ValueError, OSError) as exc:
+        flash(str(exc), "error")
+    else:
+        if storage.configured():
+            try:
+                storage.save_sample(sample)
+            except storage.StorageError:
+                flash(f"Muestra de {sample['label']} guardada localmente; Supabase no respondió.", "success")
+            else:
+                flash(f"Muestra de {sample['label']} guardada localmente y en Supabase.", "success")
+        else:
+            flash(f"Muestra de {sample['label']} guardada en {LOCAL_SIGN_DATASET.name}.", "success")
+    return redirect(url_for("dashboard"))
+
+
+@app.get("/api/datasets/<kind>")
+def dataset_history(kind):
+    if not session.get("user"):
+        return jsonify({"error": "Inicia sesión."}), 401
+    if session["user"].get("role") != "admin":
+        return jsonify({"error": "Se requiere acceso administrador."}), 403
+    if kind not in ("sensors", "signs"):
+        abort(404)
+    try:
+        limit = int(request.args.get("limit", "50"))
+        offset = int(request.args.get("offset", "0"))
+        if not 1 <= limit <= 100 or not 0 <= offset <= 1000000:
+            raise ValueError()
+    except ValueError:
+        return jsonify({"error": "limit debe ser 1–100 y offset 0–1000000."}), 400
+    try:
+        rows = storage.list_rows(kind, limit, offset)
+    except storage.StorageError as exc:
+        return jsonify({"error": str(exc)}), 503
+    if request.args.get("format") == "csv":
+        if kind != "signs":
+            return jsonify({"error": "CSV disponible solo para señas."}), 400
+        buffer = io.StringIO(newline="")
+        writer = csv.writer(buffer)
+        writer.writerows([row["label"], *row["features"]] for row in rows)
+        response = Response(buffer.getvalue(), mimetype="text/csv")
+        response.headers["Content-Disposition"] = f'attachment; filename="dataset_senias_{offset}.csv"'
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    response = jsonify({"data": rows, "limit": limit, "offset": offset,
+                        "next_offset": offset + limit if len(rows) == limit else None})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/admin/datasets")
+@login_required("admin")
+def datasets_page():
+    return render_template("datasets.html", user=session["user"])
 
 
 @app.get("/reader/video")

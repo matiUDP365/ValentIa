@@ -14,7 +14,7 @@ _latest_device_id = None
 _latest_source = None
 
 
-def receive_telemetry(payload):
+def receive_telemetry(payload, persist=None):
     """Valida y guarda en memoria un paquete enviado por el terminal.
 
     Contrato JSON esperado: device_id, components[] con id/status opcionalmente
@@ -41,11 +41,11 @@ def receive_telemetry(payload):
             raise ValueError("Cada componente debe ser un objeto.")
         component_id = item.get("id")
         status = item.get("status")
-        if component_id not in DEVICE_COMPONENTS:
+        if not isinstance(component_id, str) or component_id not in DEVICE_COMPONENTS:
             raise ValueError("id de componente no reconocido.")
         if component_id in parsed:
             raise ValueError("No repitas componentes en el mismo paquete.")
-        if status not in DEVICE_STATUSES:
+        if not isinstance(status, str) or status not in DEVICE_STATUSES:
             raise ValueError("status debe ser online, offline, error o maintenance.")
 
         value = item.get("value")
@@ -67,6 +67,12 @@ def receive_telemetry(payload):
             "message": message,
             "received_at": received_at,
         }
+
+    if persist is not None:
+        persist(device_id.strip(), source, [
+            {"id": key, **{k: v for k, v in item.items() if k != "received_at"}}
+            for key, item in parsed.items()
+        ], received_at.isoformat())
 
     with _telemetry_lock:
         _latest_telemetry.update(parsed)

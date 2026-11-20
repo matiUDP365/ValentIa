@@ -21,6 +21,16 @@ document.addEventListener("DOMContentLoaded", () => {
   const sidebar = document.querySelector(".sidebar");
   if (menu && sidebar) menu.addEventListener("click", () => sidebar.classList.toggle("sidebar-open"));
 
+  const sampleLabel = document.querySelector("#sampleLabel");
+  if (sampleLabel) {
+    document.querySelectorAll("[data-sample-label]").forEach((button) => {
+      button.addEventListener("click", () => {
+        sampleLabel.value = button.dataset.sampleLabel;
+        sampleLabel.focus();
+      });
+    });
+  }
+
   const monitoringPanel = document.querySelector("[data-monitoring-url]");
   if (monitoringPanel) {
     const refreshMonitoring = async () => {

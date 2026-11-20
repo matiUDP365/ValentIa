@@ -6,6 +6,7 @@
     <a class="brand brand-on-dark" href="{{ url_for('dashboard') }}"><span class="brand-mark">v<span>+</span></span><span class="brand-name">valenTIa<small>ADMIN CONSOLE</small></span></a>
     <div class="side-label">GESTIÓN</div>
     <nav class="side-nav" aria-label="Administración">
+      <a href="{{ url_for('datasets_page') }}"><span>▤</span> Datasets en Supabase</a>
       <a class="{% if tab == 'overview' %}active{% endif %}" href="{{ url_for('dashboard', tab='overview') }}"><span>◫</span> Resumen</a>
       <a class="{% if tab == 'devices' %}active{% endif %}" href="{{ url_for('dashboard', tab='devices') }}"><span>▣</span> Dispositivos <b class="nav-count">{{ monitoring.components|length }}</b></a>
       <a class="{% if tab == 'activity' %}active{% endif %}" href="{{ url_for('dashboard', tab='activity') }}"><span>◷</span> Actividad</a>

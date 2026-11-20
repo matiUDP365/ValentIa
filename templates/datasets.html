@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Datasets · valenTIa{% endblock %}
+{% block body %}
+<main class="content">
+  <a href="{{ url_for('dashboard') }}">← Volver al panel</a>
+  <h1>Datos guardados en Supabase</h1>
+  <p>Historial persistente de sensores y muestras de entrenamiento etiquetadas. Las simulaciones se identifican en la columna de origen.</p>
+  <label for="datasetKind">Dataset</label>
+  <select id="datasetKind"><option value="sensors">Sensores</option><option value="signs">Señas</option></select>
+  <button id="reload" type="button" class="button button-secondary">Actualizar</button>
+  <button id="download" type="button" class="button button-secondary" disabled>Descargar esta página JSON</button>
+  <a id="downloadCsv" class="button button-secondary" href="#" hidden>Descargar esta página CSV para entrenar</a>
+  <p>Las muestras pueden llegar desde la Raspberry. El CSV de señas no tiene cabecera: etiqueta y 126 características ordenadas en bloques de mano izquierda y derecha.</p>
+  <p id="datasetMessage" role="status"></p>
+  <div class="table-scroll"><table><thead id="datasetHead"></thead><tbody id="datasetBody"></tbody></table></div>
+  <button id="previous" type="button" class="button button-secondary">Anterior</button>
+  <button id="next" type="button" class="button button-secondary">Siguiente</button>
+</main>
+<script src="{{ url_for('static', filename='js/datasets.js') }}" defer></script>
+{% endblock %}

@@ -28,6 +28,23 @@
         </div>
       </div>
     </section>
+    <section class="panel-card" style="padding:24px;margin:24px 0">
+      <h2>Dataset de señas</h2>
+      <p>Inicia el lector, mantén una seña visible y guarda varias muestras con su etiqueta real. Se guardan coordenadas, no fotos. Las muestras se agregan localmente a <code>dataset_senias.csv</code>; si Supabase está configurado, también se envían allí.</p>
+      <div class="sample-targets">
+        <div><b>Letras pendientes:</b><div class="sample-chips" aria-label="Letras que faltan en el dataset">
+          {% for label in ['F', 'G', 'J', 'K', 'M', 'P', 'Q', 'S', 'T', 'X', 'Z'] %}<button class="sample-chip" type="button" data-sample-label="{{ label }}">{{ label }}</button>{% endfor %}
+        </div></div>
+        <div><b>Acción propuesta:</b><div class="sample-chips"><button class="sample-chip" type="button" data-sample-label="SOLICITAR DEPOSITO">Solicitar depósito</button></div></div>
+      </div>
+      <form action="{{ url_for('capture_dataset_sample') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="sampleLabel">Etiqueta real de la seña</label>
+        <input id="sampleLabel" name="label" maxlength="64" required placeholder="Ej.: HOLA" autocomplete="off">
+        <button class="button button-primary" type="submit">Guardar muestra</button>
+      </form>
+      <p class="sample-note">Para cada etiqueta, intenta reunir al menos 30 muestras reales, variando un poco la distancia y la posición de la mano. Mantén el mismo tipo de seña (una o dos manos) para todas las muestras de una etiqueta. Después hay que reentrenar el modelo; guardar muestras no lo actualiza automáticamente.</p>
+    </section>
     <div class="section-title"><div><h2>Componentes del terminal</h2><p>Estado actual de cada servicio conectado.</p></div><span class="summary-count"><i></i> {{ monitoring.components|length }} módulos</span></div>
     <section class="module-grid" aria-label="Estado de módulos" data-monitoring-url="{{ url_for('monitoring_status_api') }}">
       {% for component in monitoring.components %}
